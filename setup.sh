@@ -48,6 +48,34 @@ safe_cp() {
   fi
 }
 
+# Helper: check if all Python packages from requirements are already installed in venv
+venv_has_all_requirements() {
+  local req_file="$1"
+  local pip_bin="$2"
+  local req_line pkg
+
+  [ -f "$req_file" ] || return 1
+  [ -x "$pip_bin" ] || return 1
+
+  while IFS= read -r req_line || [ -n "$req_line" ]; do
+    # Skip empty lines and comments
+    req_line="${req_line%%#*}"
+    req_line="${req_line//[[:space:]]/}"
+    [ -z "$req_line" ] && continue
+
+    # Strip version/operator markers if present (==,>=,<=,~, etc.)
+    pkg="$req_line"
+    pkg="${pkg%%[*<>=!~]*}"
+    [ -z "$pkg" ] && continue
+
+    if ! "$pip_bin" show "$pkg" >/dev/null 2>&1; then
+      return 1
+    fi
+  done < "$req_file"
+
+  return 0
+}
+
 clear
 echo ""
 echo -e "${PURPLE}"
@@ -113,12 +141,12 @@ fi
 # ─── STEP 3: Obsidian ────────────────────────────────────────────────────────
 echo ""
 echo -e "${WHITE}Step 2/7 — Installing Obsidian${RESET}"
-if ! brew list --cask obsidian &>/dev/null 2>&1; then
+if brew list --cask obsidian &>/dev/null 2>&1 || [ -d "/Applications/Obsidian.app" ] || [ -d "$HOME/Applications/Obsidian.app" ]; then
+  echo -e "  ${GREEN}✓${RESET} Obsidian already installed — skipping"
+else
   echo "  Installing Obsidian..."
   brew install --cask obsidian
   echo -e "  ${GREEN}✓${RESET} Obsidian installed"
-else
-  echo -e "  ${GREEN}✓${RESET} Obsidian already installed"
 fi
 
 # ─── STEP 4: Claude Code ─────────────────────────────────────────────────────
@@ -140,7 +168,10 @@ PIP_OK=false
 if command -v python3 &>/dev/null; then
   VENV_DIR="$HOME/.second-brain-venv"
   python3 -m venv "$VENV_DIR" 2>/dev/null || true
-  if "$VENV_DIR/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
+  if venv_has_all_requirements "$SCRIPT_DIR/requirements.txt" "$VENV_DIR/bin/pip"; then
+    echo -e "  ${GREEN}✓${RESET} Python packages already installed — skipping"
+    PIP_OK=true
+  elif "$VENV_DIR/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null; then
     echo -e "  ${GREEN}✓${RESET} Python packages installed"
     PIP_OK=true
   else
@@ -343,23 +374,34 @@ read -rp "  Install Kepano's Obsidian skills? [Y/n]: " KEPANO_ANSWER
 KEPANO_ANSWER="${KEPANO_ANSWER:-Y}"
 
 if [[ "$KEPANO_ANSWER" =~ ^[Yy] ]]; then
-  echo "  Cloning obsidian-skills..."
-  TEMP_DIR=$(mktemp -d)
-  if git clone --depth=1 https://github.com/kepano/obsidian-skills.git "$TEMP_DIR/obsidian-skills" &>/dev/null; then
-    for skill_dir in "$TEMP_DIR/obsidian-skills/skills"/*/; do
-      skill_name=$(basename "$skill_dir")
-      # Install to vault AND globally
-      mkdir -p "$VAULT_PATH/.claude/skills/$skill_name" "$HOME/.claude/skills/$skill_name"
-      cp "$skill_dir/SKILL.md" "$VAULT_PATH/.claude/skills/$skill_name/SKILL.md" 2>/dev/null || true
-      cp "$skill_dir/SKILL.md" "$HOME/.claude/skills/$skill_name/SKILL.md" 2>/dev/null || true
-    done
-    rm -rf "$TEMP_DIR"
-    echo -e "  ${GREEN}✓${RESET} Kepano's Obsidian skills installed (vault + global)"
+  if [ -f "$VAULT_PATH/.claude/skills/obsidian-cli/SKILL.md" ] && \
+     [ -f "$VAULT_PATH/.claude/skills/obsidian-markdown/SKILL.md" ] && \
+     [ -f "$VAULT_PATH/.claude/skills/obsidian-bases/SKILL.md" ] && \
+     [ -f "$VAULT_PATH/.claude/skills/json-canvas/SKILL.md" ] && \
+     [ -f "$HOME/.claude/skills/obsidian-cli/SKILL.md" ] && \
+     [ -f "$HOME/.claude/skills/obsidian-markdown/SKILL.md" ] && \
+     [ -f "$HOME/.claude/skills/obsidian-bases/SKILL.md" ] && \
+     [ -f "$HOME/.claude/skills/json-canvas/SKILL.md" ]; then
+    echo -e "  ${GREEN}✓${RESET} Kepano's Obsidian skills already installed — skipping"
   else
-    rm -rf "$TEMP_DIR"
-    echo -e "  ${ORANGE}⚠${RESET}  Couldn't reach GitHub."
-    echo -e "     Optional — your vault works without this."
-    echo -e "     To install later: ${DIM}https://github.com/kepano/obsidian-skills${RESET}"
+    echo "  Cloning obsidian-skills..."
+    TEMP_DIR=$(mktemp -d)
+    if git clone --depth=1 https://github.com/kepano/obsidian-skills.git "$TEMP_DIR/obsidian-skills" &>/dev/null; then
+      for skill_dir in "$TEMP_DIR/obsidian-skills/skills"/*/; do
+        skill_name=$(basename "$skill_dir")
+        # Install to vault AND globally
+        mkdir -p "$VAULT_PATH/.claude/skills/$skill_name" "$HOME/.claude/skills/$skill_name"
+        cp "$skill_dir/SKILL.md" "$VAULT_PATH/.claude/skills/$skill_name/SKILL.md" 2>/dev/null || true
+        cp "$skill_dir/SKILL.md" "$HOME/.claude/skills/$skill_name/SKILL.md" 2>/dev/null || true
+      done
+      rm -rf "$TEMP_DIR"
+      echo -e "  ${GREEN}✓${RESET} Kepano's Obsidian skills installed (vault + global)"
+    else
+      rm -rf "$TEMP_DIR"
+      echo -e "  ${ORANGE}⚠${RESET}  Couldn't reach GitHub."
+      echo -e "     Optional — your vault works without this."
+      echo -e "     To install later: ${DIM}https://github.com/kepano/obsidian-skills${RESET}"
+    fi
   fi
 else
   echo -e "  ${DIM}  Skipped — install anytime: https://github.com/kepano/obsidian-skills${RESET}"
@@ -371,7 +413,7 @@ echo -e "  ${WHITE}Checking installation...${RESET}"
 echo -e "  ${DIM}(Any failures above are safe to retry — just re-run this script.)${RESET}"
 echo ""
 
-if brew list --cask obsidian &>/dev/null 2>&1; then
+if brew list --cask obsidian &>/dev/null 2>&1 || [ -d "/Applications/Obsidian.app" ] || [ -d "$HOME/Applications/Obsidian.app" ]; then
   echo -e "  ${GREEN}✓${RESET} Obsidian"
 else
   echo -e "  ${ORANGE}✗${RESET} Obsidian — run: brew install --cask obsidian"
